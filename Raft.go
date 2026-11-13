@@ -2,11 +2,6 @@ package raft
 
 import (
 	"labrpc"
-	"sync"
-	"time"
-)
-import (
-	"labrpc"
 	"math/rand"
 	"sync"
 	"sync/atomic"
