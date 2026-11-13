@@ -405,3 +405,17 @@ func (rf *Raft) applier() {
 		rf.mu.Lock()
 	}
 }
+// Start appends a command to the leader's log and starts replicating it.
+// Returns immediately: (index, term, isLeader).
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.state != Leader {
+		return -1, rf.currentTerm, false
+	}
+	rf.log = append(rf.log, LogEntry{Term: rf.currentTerm, Command: command})
+	index := len(rf.log) - 1
+	rf.matchIndex[rf.me] = index
+	rf.broadcast()
+	return index, rf.currentTerm, true
+}
