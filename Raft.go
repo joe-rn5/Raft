@@ -351,3 +351,57 @@ func (rf *Raft) startElection() {
 		}(i)
 	}
 }
+
+// Make creates a Raft peer. If your starter code's Make has a different
+// parameter list, keep the starter's signature and only copy the body.
+func Make(peers []*labrpc.ClientEnd, me int, applyCh chan ApplyMsg) *Raft {
+	rf := &Raft{
+		peers:    peers,
+		me:       me,
+		applyCh:  applyCh,
+		votedFor: -1,
+		log:      []LogEntry{{Term: 0}}, // dummy entry at index 0
+	}
+	rf.cond = sync.NewCond(&rf.mu)
+	rf.resetTimer()
+
+	go rf.ticker()
+	go rf.applier()
+	return rf
+}
+
+// ticker drives both election timeouts (followers/candidates) and heartbeats (leader).
+func (rf *Raft) ticker() {
+	lastBeat := time.Now()
+	for !rf.killed() {
+		time.Sleep(10 * time.Millisecond)
+		rf.mu.Lock()
+		if rf.state == Leader {
+			if time.Since(lastBeat) >= heartbeatInterval {
+				lastBeat = time.Now()
+				rf.broadcast()
+			}
+		} else if time.Since(rf.lastHeard) >= rf.timeout {
+			rf.startElection()
+		}
+		rf.mu.Unlock()
+	}
+}
+
+// applier delivers committed entries to applyCh in order, exactly once.
+// The channel send happens WITHOUT the lock so it can never block RPC handlers.
+func (rf *Raft) applier() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	for !rf.killed() {
+		if rf.lastApplied >= rf.commitIndex {
+			rf.cond.Wait()
+			continue
+		}
+		rf.lastApplied++
+		msg := ApplyMsg{Index: rf.lastApplied, Command: rf.log[rf.lastApplied].Command}
+		rf.mu.Unlock()
+		rf.applyCh <- msg
+		rf.mu.Lock()
+	}
+}
