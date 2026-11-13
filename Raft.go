@@ -5,7 +5,13 @@ import (
 	"sync"
 	"time"
 )
-
+import (
+	"labrpc"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"time"
+)
 // ApplyMsg is sent on applyCh for every committed entry.
 // If your starter code already defines ApplyMsg, keep ITS version and delete this one.
 type ApplyMsg struct {
@@ -85,4 +91,60 @@ type AppendEntriesReply struct {
 	Term          int
 	Success       bool
 	ConflictIndex int // hint: where the leader should retry from
+}
+
+func (rf *Raft) GetState() (int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.currentTerm, rf.state == Leader
+}
+
+// Kill stops the background goroutines (harmless if the tests never call it).
+func (rf *Raft) Kill() {
+	atomic.StoreInt32(&rf.dead, 1)
+	rf.mu.Lock()
+	rf.cond.Broadcast()
+	rf.mu.Unlock()
+}
+
+func (rf *Raft) killed() bool { return atomic.LoadInt32(&rf.dead) == 1 }
+
+// Helpers (call with rf.mu held)
+
+func (rf *Raft) resetTimer() {
+	rf.lastHeard = time.Now()
+	rf.timeout = time.Duration(electionMin+rand.Intn(electionRange)) * time.Millisecond
+}
+
+// Any message with a higher term makes us a follower of that term.
+func (rf *Raft) becomeFollower(term int) {
+	rf.currentTerm = term
+	rf.votedFor = -1
+	rf.state = Follower
+}
+
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+	}
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+	if args.Term < rf.currentTerm {
+		return
+	}
+
+	// Election restriction: candidate's log must be at least as up-to-date as ours.
+	lastIndex := len(rf.log) - 1
+	lastTerm := rf.log[lastIndex].Term
+	upToDate := args.LastLogTerm > lastTerm ||
+		(args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIndex)
+
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && upToDate {
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+		rf.resetTimer()
+	}
 }
