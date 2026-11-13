@@ -207,3 +207,92 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 }
+
+// broadcast sends AppendEntries (entries or heartbeat) to every follower.
+func (rf *Raft) broadcast() {
+	for i := range rf.peers {
+		if i != rf.me {
+			go rf.replicate(i)
+		}
+	}
+}
+
+// replicate sends one AppendEntries to peer i and processes the reply.
+func (rf *Raft) replicate(i int) {
+	rf.mu.Lock()
+	if rf.state != Leader {
+		rf.mu.Unlock()
+		return
+	}
+	term := rf.currentTerm
+	prev := rf.nextIndex[i] - 1
+	args := AppendEntriesArgs{
+		Term:         term,
+		LeaderId:     rf.me,
+		PrevLogIndex: prev,
+		PrevLogTerm:  rf.log[prev].Term,
+		Entries:      append([]LogEntry(nil), rf.log[prev+1:]...), // copy: sent outside the lock
+		LeaderCommit: rf.commitIndex,
+	}
+	rf.mu.Unlock()
+
+	var reply AppendEntriesReply
+	if !rf.peers[i].Call("Raft.AppendEntries", &args, &reply) {
+		return // lost; the next heartbeat retries
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if reply.Term > rf.currentTerm {
+		rf.becomeFollower(reply.Term)
+		return
+	}
+	// ignore stale replies
+	if rf.state != Leader || rf.currentTerm != term {
+		return
+	}
+
+	if reply.Success {
+		// matchIndex only moves forward, so out-of-order replies are safe
+		if match := prev + len(args.Entries); match > rf.matchIndex[i] {
+			rf.matchIndex[i] = match
+			rf.nextIndex[i] = match + 1
+			rf.advanceCommit()
+		}
+		return
+	}
+
+	// Failure: skip if another reply already moved nextIndex for this peer.
+	if rf.nextIndex[i] != prev+1 {
+		return
+	}
+
+	// Log mismatch: jump back using the follower's hint, then retry right away.
+	next := reply.ConflictIndex
+	if next > len(rf.log) {
+		next = len(rf.log)
+	}
+	if next < 1 {
+		next = 1
+	}
+	rf.nextIndex[i] = next
+	go rf.replicate(i)
+}
+
+// advanceCommit: commit the highest N replicated on a majority,
+// but only if log[N] is from the current term (Raft's commit rule).
+func (rf *Raft) advanceCommit() {
+	for n := len(rf.log) - 1; n > rf.commitIndex && rf.log[n].Term == rf.currentTerm; n-- {
+		count := 0
+		for _, m := range rf.matchIndex {
+			if m >= n {
+				count++
+			}
+		}
+		if count > len(rf.peers)/2 {
+			rf.commitIndex = n
+			rf.cond.Signal()
+			return
+		}
+	}
+}
