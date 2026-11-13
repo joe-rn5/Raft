@@ -296,3 +296,58 @@ func (rf *Raft) advanceCommit() {
 		}
 	}
 }
+
+func (rf *Raft) becomeLeader() {
+	rf.state = Leader
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = len(rf.log)
+	}
+	rf.matchIndex[rf.me] = len(rf.log) - 1
+	rf.broadcast() // immediate heartbeat
+}
+
+func (rf *Raft) startElection() {
+	rf.state = Candidate
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.resetTimer()
+
+	term := rf.currentTerm
+	args := RequestVoteArgs{
+		Term:         term,
+		CandidateId:  rf.me,
+		LastLogIndex: len(rf.log) - 1,
+		LastLogTerm:  rf.log[len(rf.log)-1].Term,
+	}
+	votes := 1 // our own vote
+
+	for i := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(i int) {
+			var reply RequestVoteReply
+			if !rf.peers[i].Call("Raft.RequestVote", &args, &reply) {
+				return
+			}
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
+			if reply.Term > rf.currentTerm {
+				rf.becomeFollower(reply.Term)
+				return
+			}
+			// ignore stale replies
+			if rf.state != Candidate || rf.currentTerm != term {
+				return
+			}
+			if reply.VoteGranted {
+				votes++
+				if votes > len(rf.peers)/2 {
+					rf.becomeLeader()
+				}
+			}
+		}(i)
+	}
+}
