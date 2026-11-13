@@ -148,3 +148,62 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.resetTimer()
 	}
 }
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Success = false
+	if args.Term > rf.currentTerm {
+		rf.becomeFollower(args.Term)
+	}
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		return
+	}
+
+	// Valid leader for this term: stay/become follower and reset the timer.
+	rf.state = Follower
+	rf.resetTimer()
+
+	// Consistency check.
+	if args.PrevLogIndex >= len(rf.log) {
+		reply.ConflictIndex = len(rf.log) // our log is too short
+		return
+	}
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		// skip back to the first entry of the conflicting term
+		idx := args.PrevLogIndex
+		for idx > 1 && rf.log[idx-1].Term == rf.log[args.PrevLogIndex].Term {
+			idx--
+		}
+		reply.ConflictIndex = idx
+		return
+	}
+
+	// Append new entries; truncate only on a real conflict (same index, different term).
+	for k, e := range args.Entries {
+		idx := args.PrevLogIndex + 1 + k
+		if idx < len(rf.log) {
+			if rf.log[idx].Term == e.Term {
+				continue
+			}
+			rf.log = rf.log[:idx]
+		}
+		rf.log = append(rf.log, args.Entries[k:]...)
+		break
+	}
+	reply.Success = true
+
+	// Advance commit index up to the last entry this RPC covered.
+	if args.LeaderCommit > rf.commitIndex {
+		last := args.PrevLogIndex + len(args.Entries)
+		if args.LeaderCommit < last {
+			last = args.LeaderCommit
+		}
+		if last > rf.commitIndex {
+			rf.commitIndex = last
+			rf.cond.Signal()
+		}
+	}
+}
