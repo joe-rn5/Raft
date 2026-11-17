@@ -13,7 +13,6 @@ import (
 // ---------------------------------------------------------------------------
 
 // ApplyMsg is sent on applyCh for every committed entry.
-// If your starter code already defines ApplyMsg, keep ITS version and delete this one.
 type ApplyMsg struct {
 	Index       int
 	Command     interface{}
@@ -99,8 +98,7 @@ type AppendEntriesReply struct {
 // Public interface
 // ---------------------------------------------------------------------------
 
-// Make creates a Raft peer. If your starter code's Make has a different
-// parameter list, keep the starter's signature and only copy the body.
+// Make creates a Raft peer.
 func Make(peers []*labrpc.ClientEnd, me int, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{
 		peers:    peers,
